@@ -32,7 +32,7 @@ var (
 	useHardLinks              bool
 	optimizeAppSize           bool
 	useDirectMethod           bool
-	useBashMethod             bool
+	useLegacyMethod           bool
 )
 
 var Command = &cli.Command{
@@ -110,12 +110,12 @@ var Command = &cli.Command{
 		logger.PrintValue("Use Hard Links", useHardLinks)
 		logger.Println("Creating optimized DMG file...")
 		var createErr error
-		if useBashMethod {
-			createErr = dmg.CreateDMGLikeBash(defaultConfig)
+		if useLegacyMethod {
+			createErr = dmg.CreateDMG(defaultConfig, tempDir)
 		} else if useDirectMethod {
 			createErr = dmg.CreateDMGDirect(defaultConfig)
 		} else {
-			createErr = dmg.CreateDMG(defaultConfig, tempDir)
+			createErr = dmg.CreateDMGOptimal(defaultConfig)
 		}
 		if createErr != nil {
 			return createErr
@@ -281,10 +281,10 @@ var Command = &cli.Command{
 			Value:       false,
 		},
 		&cli.BoolFlag{
-			Name:        "use-bash-method",
-			Usage:       "Use bash-like method for creating DMG (optimal size + customization)",
-			Aliases:     []string{"ubm"},
-			Destination: &useBashMethod,
+			Name:        "use-legacy-method",
+			Usage:       "Use legacy method for creating DMG (larger size, backward compatibility)",
+			Aliases:     []string{"ulm"},
+			Destination: &useLegacyMethod,
 			Value:       false,
 		},
 	}, cmd.CreateSubTaskFlags()...),

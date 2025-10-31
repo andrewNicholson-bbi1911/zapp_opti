@@ -227,8 +227,8 @@ func CreateDMGDirect(config Config) error {
 	return nil
 }
 
-// CreateDMGLikeBash создает DMG по методу bash-скрипта с точным контролем размера и кастомизацией
-func CreateDMGLikeBash(config Config) error {
+// CreateDMGOptimal создает DMG с оптимальным размером и полной кастомизацией (рекомендуемый метод)
+func CreateDMGOptimal(config Config) error {
 	if config.LogWriter == nil {
 		config.LogWriter = os.Stdout
 	}
