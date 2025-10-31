@@ -26,6 +26,9 @@ type Config struct {
 	Background       string `json:"background"`
 	Contents         []Item `json:"contents"`
 	LogWriter        io.Writer
+	Format           hdiutil.Format `json:"format"`
+	CompressionLevel string         `json:"compressionLevel"`
+	UseHardLinks     bool           `json:"useHardLinks"`
 }
 
 type ItemType string
@@ -79,10 +82,37 @@ func CreateDMG(config Config, sourceDir string) error {
 	if !strings.HasSuffix(config.FileName, ".dmg") {
 		config.FileName += ".dmg"
 	}
+	
+	// Set default format if not specified
+	if config.Format == "" {
+		config.Format = hdiutil.UDZO // Default to compressed format
+	}
+
 	ctx := context.Background()
-	// Create the DMG file using hdiutil
-	if err := hdiutil.Create(ctx, config.Title, sourceDir, hdiutil.UDRW, config.FileName); err != nil {
-		return fmt.Errorf("failed to create dmg: %w", err)
+	
+	// For compressed formats, create directly without intermediate conversion
+	if config.Format == hdiutil.UDZO || config.Format == hdiutil.UDBZ {
+		// Create compressed DMG directly
+		if err := createCompressedDMG(ctx, config, sourceDir); err != nil {
+			return fmt.Errorf("failed to create compressed dmg: %w", err)
+		}
+	} else {
+		// Create the DMG file using hdiutil
+		if err := hdiutil.Create(ctx, config.Title, sourceDir, config.Format, config.FileName); err != nil {
+			return fmt.Errorf("failed to create dmg: %w", err)
+		}
+
+		// Convert to read-only if needed
+		if config.Format == hdiutil.UDRW {
+			tempFileName := filepath.Join(filepath.Dir(config.FileName), fmt.Sprintf("temp_%d_%s", time.Now().UnixNano(), filepath.Base(config.FileName)))
+			if err := os.Rename(config.FileName, tempFileName); err != nil {
+				return fmt.Errorf("failed to rename DMG file: %w", err)
+			}
+			defer os.Remove(tempFileName) // Ensure cleanup of temp file
+			if err := hdiutil.Convert(ctx, tempFileName, hdiutil.UDRO, config.FileName); err != nil {
+				return fmt.Errorf("failed to convert DMG: %w", err)
+			}
+		}
 	}
 
 	// Set custom icon for the DMG if specified
@@ -103,21 +133,121 @@ func CreateDMG(config Config, sourceDir string) error {
 		})
 	}
 
-	// Convert the DMG to read-only
-	tempFileName := "temp_" + config.FileName
-	dir, file := filepath.Split(config.FileName)
-	tempFileName = filepath.Join(dir, fmt.Sprintf("temp_%d_%s.dmg", time.Now().UnixNano(), file))
-	if err := os.Rename(config.FileName, tempFileName); err != nil {
-		return fmt.Errorf("failed to rename DMG file: %w", err)
-	}
-	defer os.Remove(tempFileName) // Ensure cleanup of temp file
-	if err := hdiutil.Convert(ctx, tempFileName, hdiutil.UDRO, config.FileName); err != nil {
-		return fmt.Errorf("failed to convert DMG: %w", err)
-	}
 	if config.Icon != "" {
 		setFileIcon(config.FileName, config.Icon)
 	}
 	return nil
+}
+
+// createCompressedDMG creates a compressed DMG file directly
+func createCompressedDMG(ctx context.Context, config Config, sourceDir string) error {
+	// Try direct creation first (simpler and more reliable)
+	if err := createCompressedDMGDirect(ctx, config, sourceDir); err == nil {
+		return nil
+	}
+	
+	// Fall back to the original method if direct creation fails
+	return createCompressedDMGWithConversion(ctx, config, sourceDir)
+}
+
+// createCompressedDMGDirect creates a compressed DMG directly without intermediate steps
+func createCompressedDMGDirect(ctx context.Context, config Config, sourceDir string) error {
+	var args []string
+	
+	args = append(args, "create")
+	args = append(args, "-volname", config.Title)
+	args = append(args, "-srcfolder", sourceDir)
+	args = append(args, "-ov")
+	args = append(args, "-format", string(config.Format))
+	
+	if config.CompressionLevel != "" {
+		args = append(args, "-imagekey", fmt.Sprintf("zlib-level=%s", config.CompressionLevel))
+	}
+	
+	args = append(args, config.FileName)
+	
+	cmd := exec.CommandContext(ctx, "hdiutil", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("hdiutil create direct failed: %w, output: %s", err, string(output))
+	}
+	
+	return nil
+}
+
+// createCompressedDMGWithConversion creates a compressed DMG using intermediate conversion
+func createCompressedDMGWithConversion(ctx context.Context, config Config, sourceDir string) error {
+	// Create temporary read-write DMG first
+	tempDMG := filepath.Join(filepath.Dir(config.FileName), fmt.Sprintf("temp_%d_%s", time.Now().UnixNano(), filepath.Base(config.FileName)))
+	defer os.Remove(tempDMG) // Clean up temp file
+
+	// Create read-write DMG
+	if err := hdiutil.Create(ctx, config.Title, sourceDir, hdiutil.UDRW, tempDMG); err != nil {
+		return fmt.Errorf("failed to create temp dmg: %w", err)
+	}
+
+	// Apply customizations if needed
+	if config.Icon != "" || config.Background != "" {
+		err := tmpMount(tempDMG, func(dmgFilePath string, mountPoint string) error {
+			if config.Icon != "" {
+				if err := setDMGIcon(mountPoint, config.Icon); err != nil {
+					return fmt.Errorf("failed to set DMG icon: %w", err)
+				}
+			}
+			if config.Background != "" {
+				store := dsstore.NewDSStore()
+				store.SetBackgroundImage(filepath.Join(mountPoint, ".background", "background.png"))
+				if err := store.Write(filepath.Join(mountPoint, ".DS_Store")); err != nil {
+					return fmt.Errorf("failed to write .DS_Store: %w", err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	// Ensure the DMG is properly detached before conversion
+	forceDetachDMG(ctx, tempDMG)
+
+	// Convert to compressed format
+	var convertArgs []string
+	if config.CompressionLevel != "" {
+		convertArgs = append(convertArgs, "-imagekey", fmt.Sprintf("zlib-level=%s", config.CompressionLevel))
+	}
+	
+	cmd := exec.CommandContext(ctx, "hdiutil", append([]string{"convert", tempDMG, "-format", string(config.Format), "-o", config.FileName}, convertArgs...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("hdiutil convert failed: %w, output: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// forceDetachDMG ensures a DMG file is properly detached
+func forceDetachDMG(ctx context.Context, dmgPath string) {
+	// Try to detach using hdiutil info to find mounted volumes
+	cmd := exec.CommandContext(ctx, "hdiutil", "info")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return
+	}
+
+	// Parse output to find mounted volumes from this DMG
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, dmgPath) && strings.Contains(line, "/Volumes/") {
+			// Extract mount point
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				mountPoint := parts[2]
+				// Try to detach this mount point
+				hdiutil.Detach(ctx, mountPoint)
+			}
+		}
+	}
 }
 
 func setFileIcon(dmgPath, iconPath string) error {
@@ -170,11 +300,16 @@ func tmpMount(dmgPath string, process func(dmgFilePath string, mountPoint string
 	if err = hdiutil.Attach(ctx, dmgPath, mountPoint); err != nil {
 		return fmt.Errorf("failed to attach DMG: %w", err)
 	}
+	
+	// Ensure DMG is detached even if process function panics
 	defer func() {
-		if err = hdiutil.Detach(ctx, mountPoint); err != nil {
-			fmt.Printf("failed to detach DMG: %s", err)
+		if detachErr := hdiutil.Detach(ctx, mountPoint); detachErr != nil {
+			fmt.Printf("Warning: failed to detach DMG: %s\n", detachErr)
+			// Try force detach
+			forceDetachDMG(ctx, dmgPath)
 		}
 	}()
+	
 	return process(dmgPath, mountPoint)
 }
 
@@ -209,8 +344,18 @@ func setupSourceDirectory(config Config, sourceDir string) error {
 		case File:
 			// Copy the file to the source directory
 			destPath := filepath.Join(sourceDir, filepath.Base(item.Path))
-			if err := copyFile(item.Path, destPath); err != nil {
-				return fmt.Errorf("failed to copy file %s to %s: %s", item.Path, destPath, err)
+			if config.UseHardLinks {
+				// Try to create hard link first, fall back to copy if it fails
+				if err := os.Link(item.Path, destPath); err != nil {
+					// Fall back to regular copy
+					if err := copyFile(item.Path, destPath); err != nil {
+						return fmt.Errorf("failed to copy file %s to %s: %s", item.Path, destPath, err)
+					}
+				}
+			} else {
+				if err := copyFile(item.Path, destPath); err != nil {
+					return fmt.Errorf("failed to copy file %s to %s: %s", item.Path, destPath, err)
+				}
 			}
 		case Dir:
 			// Copy the file to the source directory
@@ -318,6 +463,9 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer dstFile.Close()
-	_, err = io.Copy(dstFile, srcFile)
+	
+	// Use buffered copy for better performance
+	buffer := make([]byte, 32*1024) // 32KB buffer
+	_, err = io.CopyBuffer(dstFile, srcFile, buffer)
 	return err
 }

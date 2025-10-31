@@ -11,6 +11,7 @@ import (
 	_ "embed"
 
 	"github.com/urfave/cli/v2"
+	"github.com/ironpark/zapp/pkg/mactools/hdiutil"
 )
 
 //go:embed iconfile.icns
@@ -26,6 +27,9 @@ var (
 	windowWidth, windowHeight int
 	labelSize                 int
 	contentsIconSize          int
+	dmgFormat                 string
+	compressionLevel          string
+	useHardLinks              bool
 )
 
 var Command = &cli.Command{
@@ -80,6 +84,9 @@ var Command = &cli.Command{
 			WindowWidth:      windowWidth,
 			WindowHeight:     windowHeight,
 			Background:       background,
+			Format:           hdiutil.Format(dmgFormat),
+			CompressionLevel: compressionLevel,
+			UseHardLinks:     useHardLinks,
 			Contents: []dmg.Item{
 				{X: int(float64(windowWidth)/3*1 - float64(contentsIconSize)/2), Y: centerY, Type: dmg.Dir, Path: appDir},
 				{X: int(float64(windowWidth)/3*2 + float64(contentsIconSize)/2), Y: centerY, Type: dmg.Link, Path: "/Applications"},
@@ -94,7 +101,10 @@ var Command = &cli.Command{
 		logger.PrintValue("WindowWidth", windowWidth)
 		logger.PrintValue("WindowHeight", windowHeight)
 		logger.PrintValue("Background", background)
-		logger.Println("Creating DMG file...")
+		logger.PrintValue("DMG Format", dmgFormat)
+		logger.PrintValue("Compression Level", compressionLevel)
+		logger.PrintValue("Use Hard Links", useHardLinks)
+		logger.Println("Creating optimized DMG file...")
 		err = dmg.CreateDMG(defaultConfig, tempDir)
 		if err != nil {
 			return err
@@ -199,6 +209,51 @@ var Command = &cli.Command{
 			Name:    "use-original-icon ",
 			Aliases: []string{"uoi"},
 			Usage:   "Use the original icon file without modifications.",
+		},
+		&cli.StringFlag{
+			Name:        "format",
+			Usage:       "DMG format (UDRO, UDRW, UDZO, UDBZ) - UDZO recommended for best compression",
+			Aliases:     []string{"f"},
+			Destination: &dmgFormat,
+			Value:       "UDZO",
+			Action: func(c *cli.Context, format string) error {
+				validFormats := map[string]bool{
+					"UDRO": true,
+					"UDRW": true,
+					"UDZO": true,
+					"UDBZ": true,
+				}
+				if !validFormats[format] {
+					return fmt.Errorf("invalid format: %s. Valid formats: UDRO, UDRW, UDZO, UDBZ", format)
+				}
+				return nil
+			},
+		},
+		&cli.StringFlag{
+			Name:        "compression-level",
+			Usage:       "Compression level for UDZO format (1-9, where 9 is best compression)",
+			Aliases:     []string{"cl"},
+			Destination: &compressionLevel,
+			Value:       "6",
+			Action: func(c *cli.Context, level string) error {
+				if level != "" {
+					validLevels := map[string]bool{
+						"1": true, "2": true, "3": true, "4": true, "5": true,
+						"6": true, "7": true, "8": true, "9": true,
+					}
+					if !validLevels[level] {
+						return fmt.Errorf("invalid compression level: %s. Must be between 1-9", level)
+					}
+				}
+				return nil
+			},
+		},
+		&cli.BoolFlag{
+			Name:        "use-hard-links",
+			Usage:       "Use hard links instead of copying files (reduces temporary disk usage)",
+			Aliases:     []string{"hl"},
+			Destination: &useHardLinks,
+			Value:       false,
 		},
 	}, cmd.CreateSubTaskFlags()...),
 	HelpName:           "",
