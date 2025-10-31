@@ -253,7 +253,7 @@ var Command = &cli.Command{
 			Usage:       "Use hard links instead of copying files (reduces temporary disk usage)",
 			Aliases:     []string{"hl"},
 			Destination: &useHardLinks,
-			Value:       false,
+			Value:       true,
 		},
 	}, cmd.CreateSubTaskFlags()...),
 	HelpName:           "",

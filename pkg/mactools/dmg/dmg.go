@@ -320,8 +320,18 @@ func setupSourceDirectory(config Config, sourceDir string) error {
 		case Dir:
 			// Copy the file to the source directory
 			destPath := filepath.Join(sourceDir, filepath.Base(item.Path))
-			if err := copyDir(item.Path, destPath); err != nil {
-				return fmt.Errorf("failed to copy dir %s to %s: %s", item.Path, destPath, err)
+			if config.UseHardLinks {
+				// Try to create hard link copy first, fall back to regular copy if it fails
+				if err := copyDirWithHardLinks(item.Path, destPath); err != nil {
+					// Fall back to regular copy
+					if err := copyDir(item.Path, destPath); err != nil {
+						return fmt.Errorf("failed to copy dir %s to %s: %s", item.Path, destPath, err)
+					}
+				}
+			} else {
+				if err := copyDir(item.Path, destPath); err != nil {
+					return fmt.Errorf("failed to copy dir %s to %s: %s", item.Path, destPath, err)
+				}
 			}
 		case Link:
 			// Create a symbolic link
@@ -428,6 +438,49 @@ func copyFile(src, dst string) error {
 	buffer := make([]byte, 32*1024) // 32KB buffer
 	_, err = io.CopyBuffer(dstFile, srcFile, buffer)
 	return err
+}
+
+// copyDirWithHardLinks copies a directory from src to dst recursively using hard links where possible.
+func copyDirWithHardLinks(src, dst string) error {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(dst, srcInfo.Mode()); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		entryPath := srcPath
+		is_dir, err := isDir(entryPath)
+		if err != nil {
+			continue
+		}
+
+		if is_dir {
+			if err = copyDirWithHardLinks(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			// Try to create hard link first, fall back to copy if it fails
+			if err := os.Link(srcPath, dstPath); err != nil {
+				// Fall back to regular copy
+				if err := copyFile(srcPath, dstPath); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // forceDetachDMG ensures a DMG file is properly detached
