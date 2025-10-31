@@ -141,42 +141,6 @@ func CreateDMG(config Config, sourceDir string) error {
 
 // createCompressedDMG creates a compressed DMG file directly
 func createCompressedDMG(ctx context.Context, config Config, sourceDir string) error {
-	// Try direct creation first (simpler and more reliable)
-	if err := createCompressedDMGDirect(ctx, config, sourceDir); err == nil {
-		return nil
-	}
-	
-	// Fall back to the original method if direct creation fails
-	return createCompressedDMGWithConversion(ctx, config, sourceDir)
-}
-
-// createCompressedDMGDirect creates a compressed DMG directly without intermediate steps
-func createCompressedDMGDirect(ctx context.Context, config Config, sourceDir string) error {
-	var args []string
-	
-	args = append(args, "create")
-	args = append(args, "-volname", config.Title)
-	args = append(args, "-srcfolder", sourceDir)
-	args = append(args, "-ov")
-	args = append(args, "-format", string(config.Format))
-	
-	if config.CompressionLevel != "" {
-		args = append(args, "-imagekey", fmt.Sprintf("zlib-level=%s", config.CompressionLevel))
-	}
-	
-	args = append(args, config.FileName)
-	
-	cmd := exec.CommandContext(ctx, "hdiutil", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("hdiutil create direct failed: %w, output: %s", err, string(output))
-	}
-	
-	return nil
-}
-
-// createCompressedDMGWithConversion creates a compressed DMG using intermediate conversion
-func createCompressedDMGWithConversion(ctx context.Context, config Config, sourceDir string) error {
 	// Create temporary read-write DMG first
 	tempDMG := filepath.Join(filepath.Dir(config.FileName), fmt.Sprintf("temp_%d_%s", time.Now().UnixNano(), filepath.Base(config.FileName)))
 	defer os.Remove(tempDMG) // Clean up temp file
@@ -186,7 +150,7 @@ func createCompressedDMGWithConversion(ctx context.Context, config Config, sourc
 		return fmt.Errorf("failed to create temp dmg: %w", err)
 	}
 
-	// Apply customizations if needed
+	// Apply customizations (icon and background) to the read-write DMG
 	if config.Icon != "" || config.Background != "" {
 		err := tmpMount(tempDMG, func(dmgFilePath string, mountPoint string) error {
 			if config.Icon != "" {
@@ -195,8 +159,28 @@ func createCompressedDMGWithConversion(ctx context.Context, config Config, sourc
 				}
 			}
 			if config.Background != "" {
+				// Copy background image to mounted volume
+				backgroundDir := filepath.Join(mountPoint, ".background")
+				if err := os.MkdirAll(backgroundDir, 0755); err != nil {
+					return fmt.Errorf("failed to create .background directory: %w", err)
+				}
+				if err := copyFile(config.Background, filepath.Join(backgroundDir, "background.png")); err != nil {
+					return fmt.Errorf("failed to copy background: %w", err)
+				}
+				
+				// Create DS_Store with background settings
 				store := dsstore.NewDSStore()
+				store.SetIconSize(float64(config.ContentsIconSize))
+				store.SetWindow(config.WindowWidth, config.WindowHeight, 0, 0)
+				store.SetLabelSize(float64(config.LabelSize))
+				store.SetLabelPlaceToBottom(true)
+				store.SetBgToDefault()
 				store.SetBackgroundImage(filepath.Join(mountPoint, ".background", "background.png"))
+				
+				for _, content := range config.Contents {
+					store.SetIconPos(filepath.Base(content.Path), uint32(content.X), uint32(content.Y))
+				}
+				
 				if err := store.Write(filepath.Join(mountPoint, ".DS_Store")); err != nil {
 					return fmt.Errorf("failed to write .DS_Store: %w", err)
 				}
@@ -224,30 +208,6 @@ func createCompressedDMGWithConversion(ctx context.Context, config Config, sourc
 	}
 
 	return nil
-}
-
-// forceDetachDMG ensures a DMG file is properly detached
-func forceDetachDMG(ctx context.Context, dmgPath string) {
-	// Try to detach using hdiutil info to find mounted volumes
-	cmd := exec.CommandContext(ctx, "hdiutil", "info")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return
-	}
-
-	// Parse output to find mounted volumes from this DMG
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, dmgPath) && strings.Contains(line, "/Volumes/") {
-			// Extract mount point
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				mountPoint := parts[2]
-				// Try to detach this mount point
-				hdiutil.Detach(ctx, mountPoint)
-			}
-		}
-	}
 }
 
 func setFileIcon(dmgPath, iconPath string) error {
@@ -468,4 +428,28 @@ func copyFile(src, dst string) error {
 	buffer := make([]byte, 32*1024) // 32KB buffer
 	_, err = io.CopyBuffer(dstFile, srcFile, buffer)
 	return err
+}
+
+// forceDetachDMG ensures a DMG file is properly detached
+func forceDetachDMG(ctx context.Context, dmgPath string) {
+	// Try to detach using hdiutil info to find mounted volumes
+	cmd := exec.CommandContext(ctx, "hdiutil", "info")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return
+	}
+
+	// Parse output to find mounted volumes from this DMG
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, dmgPath) && strings.Contains(line, "/Volumes/") {
+			// Extract mount point
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				mountPoint := parts[2]
+				// Try to detach this mount point
+				hdiutil.Detach(ctx, mountPoint)
+			}
+		}
+	}
 }
