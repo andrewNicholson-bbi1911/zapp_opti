@@ -30,6 +30,9 @@ var (
 	dmgFormat                 string
 	compressionLevel          string
 	useHardLinks              bool
+	optimizeAppSize           bool
+	useDirectMethod           bool
+	useBashMethod             bool
 )
 
 var Command = &cli.Command{
@@ -87,6 +90,7 @@ var Command = &cli.Command{
 			Format:           hdiutil.Format(dmgFormat),
 			CompressionLevel: compressionLevel,
 			UseHardLinks:     useHardLinks,
+			OptimizeAppSize:  optimizeAppSize,
 			Contents: []dmg.Item{
 				{X: int(float64(windowWidth)/3*1 - float64(contentsIconSize)/2), Y: centerY, Type: dmg.Dir, Path: appDir},
 				{X: int(float64(windowWidth)/3*2 + float64(contentsIconSize)/2), Y: centerY, Type: dmg.Link, Path: "/Applications"},
@@ -105,9 +109,16 @@ var Command = &cli.Command{
 		logger.PrintValue("Compression Level", compressionLevel)
 		logger.PrintValue("Use Hard Links", useHardLinks)
 		logger.Println("Creating optimized DMG file...")
-		err = dmg.CreateDMG(defaultConfig, tempDir)
-		if err != nil {
-			return err
+		var createErr error
+		if useBashMethod {
+			createErr = dmg.CreateDMGLikeBash(defaultConfig)
+		} else if useDirectMethod {
+			createErr = dmg.CreateDMGDirect(defaultConfig)
+		} else {
+			createErr = dmg.CreateDMG(defaultConfig, tempDir)
+		}
+		if createErr != nil {
+			return createErr
 		}
 		logger.Success("DMG file created successfully!")
 		err = cmd.RunSignCmd(c, out)
@@ -234,7 +245,7 @@ var Command = &cli.Command{
 			Usage:       "Compression level for UDZO format (1-9, where 9 is best compression)",
 			Aliases:     []string{"cl"},
 			Destination: &compressionLevel,
-			Value:       "6",
+			Value:       "9",
 			Action: func(c *cli.Context, level string) error {
 				if level != "" {
 					validLevels := map[string]bool{
@@ -250,10 +261,31 @@ var Command = &cli.Command{
 		},
 		&cli.BoolFlag{
 			Name:        "use-hard-links",
-			Usage:       "Use hard links instead of copying files (reduces temporary disk usage)",
+			Usage:       "Use hard links instead of copying files (reduces temporary disk usage, now safe for Gatekeeper)",
 			Aliases:     []string{"hl"},
 			Destination: &useHardLinks,
-			Value:       true,
+			Value:       false,
+		},
+		&cli.BoolFlag{
+			Name:        "optimize-app-size",
+			Usage:       "Optimize the app size by removing unused resources (reduces DMG size)",
+			Aliases:     []string{"oas"},
+			Destination: &optimizeAppSize,
+			Value:       false,
+		},
+		&cli.BoolFlag{
+			Name:        "use-direct-method",
+			Usage:       "Use direct method for creating DMG (faster, but less reliable)",
+			Aliases:     []string{"udm"},
+			Destination: &useDirectMethod,
+			Value:       false,
+		},
+		&cli.BoolFlag{
+			Name:        "use-bash-method",
+			Usage:       "Use bash-like method for creating DMG (optimal size + customization)",
+			Aliases:     []string{"ubm"},
+			Destination: &useBashMethod,
+			Value:       false,
 		},
 	}, cmd.CreateSubTaskFlags()...),
 	HelpName:           "",

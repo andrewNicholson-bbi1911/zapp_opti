@@ -58,11 +58,11 @@ func Convert(ctx context.Context, inputFile string, format Format, outputFile st
 
 // Attach mounts a DMG file
 func Attach(ctx context.Context, dmgPath, mountPoint string) error {
-	args := []string{dmgPath}
+	args := []string{"attach", dmgPath}
 	if mountPoint != "" {
 		args = append(args, "-mountpoint", mountPoint)
 	}
-	return runCommand(ctx, "attach", args...)
+	return runCommand(ctx, args...)
 }
 
 // Detach unmounts a DMG file with retry
@@ -91,12 +91,32 @@ func Detach(ctx context.Context, target string) error {
 	return fmt.Errorf("failed to detach after %d attempts: %w", maxRetries, lastErr)
 }
 
+// CreateWithSize создает DMG файл с точным контролем размера
+func CreateWithSize(ctx context.Context, volName, srcFolder string, format Format, outputFile string, sizeMB int) error {
+	if !supportedFormats[format] {
+		return fmt.Errorf("unsupported format: %s", format)
+	}
+	
+	// Создаем DMG с точным размером
+	args := []string{
+		"create",
+		"-volname", volName,
+		"-srcfolder", srcFolder,
+		"-ov",
+		"-format", string(format),
+		"-size", fmt.Sprintf("%dm", sizeMB),
+		outputFile,
+	}
+	
+	return runCommand(ctx, args...)
+}
+
 // Helper function to run hdiutil commands
-func runCommand(ctx context.Context, operation string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "hdiutil", append([]string{operation}, args...)...)
+func runCommand(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, "hdiutil", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("hdiutil %s failed: %w, output: %s", operation, err, string(output))
+		return fmt.Errorf("hdiutil failed: %w, output: %s", err, string(output))
 	}
 	return nil
 }
